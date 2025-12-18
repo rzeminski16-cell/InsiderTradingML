@@ -1,0 +1,36 @@
+{
+  "IsolationForest": {
+    "contamination": 0.05,
+    "n_estimators": 100,
+    "max_samples": "auto",
+    "random_state": 42
+  },
+  "DBSCAN": {
+    "eps": 0.5,
+    "min_samples": 5,
+    "metric": "euclidean"
+  },
+  "LocalOutlierFactor": {
+    "n_neighbors": 20,
+    "contamination": 0.05,
+    "novelty": true
+  },
+  "LSTMAutoencoder": {
+    "sequence_length": 7,
+    "encoding_dim": 16,
+    "epochs": 50,
+    "batch_size": 16,
+    "patience": 5,
+    "validation_split": 0.2
+  },
+  "KMeans": {
+    "n_clusters": 5,
+    "init": "k-means++",
+    "random_state": 42
+  },
+  "OneClassSVM": {
+    "kernel": "rbf",
+    "nu": 0.05,
+    "gamma": "scale"
+  }
+}

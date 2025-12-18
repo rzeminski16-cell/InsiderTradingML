@@ -1,0 +1,55 @@
+{
+  "application": {
+    "name": "Insider Trading Anomaly Detection System",
+    "version": "1.0.0",
+    "author": "InsiderTradingML Team"
+  },
+  "paths": {
+    "data_dir": "data",
+    "raw_data_dir": "data/raw",
+    "processed_data_dir": "data/processed",
+    "new_transactions_dir": "data/new_transactions",
+    "models_dir": "models",
+    "saved_models_dir": "models/saved_models",
+    "training_logs_dir": "models/training_logs",
+    "reports_dir": "reports",
+    "logs_dir": "logs",
+    "config_dir": "config"
+  },
+  "logging": {
+    "level_console": "INFO",
+    "level_file": "DEBUG",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    "date_format": "%Y-%m-%d %H:%M:%S",
+    "max_file_size_mb": 10,
+    "backup_count": 5
+  },
+  "gui": {
+    "window_width": 1400,
+    "window_height": 900,
+    "min_width": 1200,
+    "min_height": 700,
+    "table_max_rows_preview": 20,
+    "theme": "Fusion"
+  },
+  "analysis": {
+    "default_train_ratio": 0.8,
+    "default_validation_ratio": 0.1,
+    "default_test_ratio": 0.1,
+    "random_seed": 42,
+    "max_transactions_warning": 100000,
+    "chunk_size": 10000
+  },
+  "anomaly_detection": {
+    "default_threshold_method": "percentile",
+    "default_percentile": 95,
+    "default_std_multiplier": 3.0,
+    "voting_method": "majority"
+  },
+  "reporting": {
+    "excel_max_rows": 10000,
+    "chart_dpi": 100,
+    "date_format": "%Y-%m-%d",
+    "datetime_format": "%Y-%m-%d %H:%M:%S"
+  }
+}

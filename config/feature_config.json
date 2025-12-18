@@ -1,0 +1,70 @@
+{
+  "aggregation": {
+    "default_window_days": 14,
+    "available_windows": [7, 14, 21, 30, 60, 90],
+    "baseline_window_days": 90
+  },
+  "feature_categories": {
+    "volume_based": {
+      "enabled": true,
+      "features": [
+        "total_transaction_volume",
+        "transaction_count",
+        "avg_transaction_size",
+        "volume_volatility",
+        "volume_std_deviation"
+      ]
+    },
+    "behavioral": {
+      "enabled": true,
+      "features": [
+        "buy_sell_ratio",
+        "buy_sell_asymmetry",
+        "executive_concentration",
+        "security_concentration",
+        "title_diversity"
+      ]
+    },
+    "temporal": {
+      "enabled": true,
+      "features": [
+        "days_since_last_transaction",
+        "trading_consistency",
+        "day_of_week_concentration"
+      ]
+    },
+    "comparative": {
+      "enabled": true,
+      "features": [
+        "volume_change_yoy",
+        "volume_change_prev_period",
+        "buy_ratio_change"
+      ]
+    },
+    "network": {
+      "enabled": true,
+      "features": [
+        "insider_network_density",
+        "transaction_timing_correlation"
+      ]
+    },
+    "acquisition_disposal": {
+      "enabled": true,
+      "features": [
+        "net_share_change",
+        "acquisition_disposal_ratio"
+      ]
+    }
+  },
+  "missing_value_handling": {
+    "method": "fill",
+    "fill_value": 0,
+    "forward_fill": true,
+    "backward_fill": true
+  },
+  "normalization": {
+    "method": "zscore",
+    "clip_outliers": true,
+    "outlier_std": 5
+  }
+}
