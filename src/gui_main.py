@@ -49,6 +49,7 @@ from .feature_engineer import FeatureEngineer
 from .model_factory import ModelFactory
 from .anomaly_scorer import AnomalyScorer, ModelDiagnostics
 from .excel_reporter import ExcelReporter
+from .alpha_vantage import AlphaVantageClient, DataInventory
 from .gui_components import (
     DataPreviewTable, FeatureTreeWidget,
     ModelConfigDialog, ProgressDialog,
@@ -844,8 +845,375 @@ class ReportingTab(QWidget):
                 subprocess.run(['xdg-open', str(self.output_path)])
 
 
+class DataFetcherTab(QWidget):
+    """Tab for fetching data from Alpha Vantage API."""
+
+    dataFetched = pyqtSignal(object)
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.logger = setup_logging(__name__)
+        self.client: Optional[AlphaVantageClient] = None
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        # API Key Section
+        api_group = QGroupBox("API Configuration")
+        api_layout = QGridLayout(api_group)
+
+        api_layout.addWidget(QLabel("Alpha Vantage API Key:"), 0, 0)
+        self.api_key_edit = QLineEdit()
+        self.api_key_edit.setPlaceholderText("Enter your API key (get free at alphavantage.co)")
+        self.api_key_edit.setEchoMode(QLineEdit.Password)
+        api_layout.addWidget(self.api_key_edit, 0, 1)
+
+        self.show_key_check = QCheckBox("Show")
+        self.show_key_check.toggled.connect(
+            lambda checked: self.api_key_edit.setEchoMode(
+                QLineEdit.Normal if checked else QLineEdit.Password
+            )
+        )
+        api_layout.addWidget(self.show_key_check, 0, 2)
+
+        self.connect_btn = QPushButton("Connect")
+        self.connect_btn.clicked.connect(self._connect_api)
+        api_layout.addWidget(self.connect_btn, 0, 3)
+
+        self.status_label = QLabel("Not connected")
+        self.status_label.setStyleSheet("color: gray;")
+        api_layout.addWidget(self.status_label, 1, 0, 1, 4)
+
+        layout.addWidget(api_group)
+
+        # Symbol Search Section
+        search_group = QGroupBox("Symbol Search")
+        search_layout = QHBoxLayout(search_group)
+
+        search_layout.addWidget(QLabel("Symbol:"))
+        self.symbol_edit = QLineEdit()
+        self.symbol_edit.setPlaceholderText("Enter stock symbol (e.g., AAPL, MSFT)")
+        self.symbol_edit.returnPressed.connect(self._search_symbol)
+        search_layout.addWidget(self.symbol_edit)
+
+        self.search_btn = QPushButton("Search")
+        self.search_btn.clicked.connect(self._search_symbol)
+        search_layout.addWidget(self.search_btn)
+
+        layout.addWidget(search_group)
+
+        # Search results
+        self.search_results = QTableWidget()
+        self.search_results.setColumnCount(4)
+        self.search_results.setHorizontalHeaderLabels(['Symbol', 'Name', 'Type', 'Region'])
+        self.search_results.setMaximumHeight(150)
+        self.search_results.itemDoubleClicked.connect(self._select_from_search)
+        layout.addWidget(self.search_results)
+
+        # Data Parameters Section
+        params_group = QGroupBox("Data Parameters")
+        params_layout = QGridLayout(params_group)
+
+        params_layout.addWidget(QLabel("Data Type:"), 0, 0)
+        self.data_type_combo = QComboBox()
+        self.data_type_combo.addItems([
+            'Daily (Adjusted)',
+            'Daily',
+            'Weekly (Adjusted)',
+            'Weekly',
+            'Monthly (Adjusted)',
+            'Monthly',
+            'Insider Transactions'
+        ])
+        params_layout.addWidget(self.data_type_combo, 0, 1)
+
+        params_layout.addWidget(QLabel("Output Size:"), 0, 2)
+        self.output_size_combo = QComboBox()
+        self.output_size_combo.addItems(['Full (20+ years)', 'Compact (100 days)'])
+        params_layout.addWidget(self.output_size_combo, 0, 3)
+
+        layout.addWidget(params_group)
+
+        # Cached Data Info Section
+        cache_group = QGroupBox("Cached Data for Selected Symbol")
+        cache_layout = QVBoxLayout(cache_group)
+
+        self.cache_info_label = QLabel("Select a symbol to see cached data info")
+        self.cache_info_label.setStyleSheet("color: gray;")
+        cache_layout.addWidget(self.cache_info_label)
+
+        self.cache_table = QTableWidget()
+        self.cache_table.setColumnCount(5)
+        self.cache_table.setHorizontalHeaderLabels([
+            'Data Type', 'Start Date', 'End Date', 'Rows', 'Last Updated'
+        ])
+        self.cache_table.setMaximumHeight(150)
+        cache_layout.addWidget(self.cache_table)
+
+        layout.addWidget(cache_group)
+
+        # Fetch Section
+        fetch_group = QGroupBox("Fetch Data")
+        fetch_layout = QVBoxLayout(fetch_group)
+
+        btn_layout = QHBoxLayout()
+        self.fetch_btn = QPushButton("Fetch Data from Alpha Vantage")
+        self.fetch_btn.clicked.connect(self._fetch_data)
+        self.fetch_btn.setEnabled(False)
+        btn_layout.addWidget(self.fetch_btn)
+
+        self.load_cached_btn = QPushButton("Load Cached Data")
+        self.load_cached_btn.clicked.connect(self._load_cached)
+        self.load_cached_btn.setEnabled(False)
+        btn_layout.addWidget(self.load_cached_btn)
+
+        fetch_layout.addLayout(btn_layout)
+
+        self.progress = QProgressBar()
+        self.progress.setVisible(False)
+        fetch_layout.addWidget(self.progress)
+
+        self.log_widget = LogWidget()
+        fetch_layout.addWidget(self.log_widget)
+
+        layout.addWidget(fetch_group)
+
+        # Preview Section
+        preview_group = QGroupBox("Data Preview")
+        preview_layout = QVBoxLayout(preview_group)
+        self.preview_table = DataPreviewTable()
+        preview_layout.addWidget(self.preview_table)
+
+        export_btn = QPushButton("Export to CSV for Analysis")
+        export_btn.clicked.connect(self._export_for_analysis)
+        preview_layout.addWidget(export_btn)
+
+        layout.addWidget(preview_group)
+
+    def _connect_api(self) -> None:
+        """Connect to Alpha Vantage API."""
+        api_key = self.api_key_edit.text().strip()
+        if not api_key:
+            QMessageBox.warning(self, "Warning", "Please enter an API key.")
+            return
+
+        try:
+            self.client = AlphaVantageClient(api_key=api_key)
+
+            # Test connection with a simple search
+            self.log_widget.log("Testing API connection...", "INFO")
+            results = self.client.search_symbols("IBM")
+
+            if len(results) > 0:
+                self.status_label.setText("Connected successfully")
+                self.status_label.setStyleSheet("color: green;")
+                self.fetch_btn.setEnabled(True)
+                self.log_widget.log("API connection successful!", "INFO")
+
+                # Update cached data view
+                self._update_all_cached_symbols()
+            else:
+                self.status_label.setText("Connected (no test results)")
+                self.status_label.setStyleSheet("color: orange;")
+                self.fetch_btn.setEnabled(True)
+
+        except Exception as e:
+            self.status_label.setText(f"Connection failed: {str(e)[:50]}")
+            self.status_label.setStyleSheet("color: red;")
+            self.log_widget.log(f"Connection failed: {e}", "ERROR")
+            QMessageBox.critical(self, "Error", f"Failed to connect: {e}")
+
+    def _search_symbol(self) -> None:
+        """Search for stock symbols."""
+        if not self.client:
+            QMessageBox.warning(self, "Warning", "Please connect to API first.")
+            return
+
+        keywords = self.symbol_edit.text().strip()
+        if not keywords:
+            return
+
+        try:
+            self.log_widget.log(f"Searching for '{keywords}'...", "INFO")
+            results = self.client.search_symbols(keywords)
+
+            self.search_results.setRowCount(len(results))
+            for row, (_, data) in enumerate(results.iterrows()):
+                self.search_results.setItem(row, 0, QTableWidgetItem(str(data.get('symbol', ''))))
+                self.search_results.setItem(row, 1, QTableWidgetItem(str(data.get('name', ''))[:50]))
+                self.search_results.setItem(row, 2, QTableWidgetItem(str(data.get('type', ''))))
+                self.search_results.setItem(row, 3, QTableWidgetItem(str(data.get('region', ''))))
+
+            self.search_results.resizeColumnsToContents()
+            self.log_widget.log(f"Found {len(results)} results", "INFO")
+
+            # Also check cached data
+            self._update_cache_info(keywords.upper())
+
+        except Exception as e:
+            self.log_widget.log(f"Search failed: {e}", "ERROR")
+
+    def _select_from_search(self, item: QTableWidgetItem) -> None:
+        """Select symbol from search results."""
+        row = item.row()
+        symbol = self.search_results.item(row, 0).text()
+        self.symbol_edit.setText(symbol)
+        self._update_cache_info(symbol)
+
+    def _update_cache_info(self, symbol: str) -> None:
+        """Update cached data information for symbol."""
+        if not self.client:
+            return
+
+        info = self.client.inventory.get_symbol_info(symbol)
+
+        if not info:
+            self.cache_info_label.setText(f"No cached data found for {symbol}")
+            self.cache_info_label.setStyleSheet("color: gray;")
+            self.cache_table.setRowCount(0)
+            self.load_cached_btn.setEnabled(False)
+            return
+
+        self.cache_info_label.setText(f"Cached data available for {symbol}:")
+        self.cache_info_label.setStyleSheet("color: green;")
+        self.load_cached_btn.setEnabled(True)
+
+        self.cache_table.setRowCount(len(info))
+        for row, (data_type, details) in enumerate(info.items()):
+            self.cache_table.setItem(row, 0, QTableWidgetItem(data_type))
+            self.cache_table.setItem(row, 1, QTableWidgetItem(str(details.get('start_date', 'N/A'))))
+            self.cache_table.setItem(row, 2, QTableWidgetItem(str(details.get('end_date', 'N/A'))))
+            self.cache_table.setItem(row, 3, QTableWidgetItem(str(details.get('row_count', 0))))
+            self.cache_table.setItem(row, 4, QTableWidgetItem(str(details.get('last_updated', 'N/A'))[:10]))
+
+        self.cache_table.resizeColumnsToContents()
+
+    def _update_all_cached_symbols(self) -> None:
+        """Update log with all cached symbols."""
+        if not self.client:
+            return
+
+        symbols = self.client.inventory.get_all_symbols()
+        if symbols:
+            self.log_widget.log(f"Cached symbols: {', '.join(symbols)}", "INFO")
+
+    def _get_data_type_params(self) -> tuple:
+        """Get data type parameters from UI selection."""
+        selection = self.data_type_combo.currentText()
+
+        type_mapping = {
+            'Daily (Adjusted)': ('daily', True),
+            'Daily': ('daily', False),
+            'Weekly (Adjusted)': ('weekly', True),
+            'Weekly': ('weekly', False),
+            'Monthly (Adjusted)': ('monthly', True),
+            'Monthly': ('monthly', False),
+            'Insider Transactions': ('insider', False)
+        }
+
+        return type_mapping.get(selection, ('daily', True))
+
+    def _fetch_data(self) -> None:
+        """Fetch data from Alpha Vantage."""
+        if not self.client:
+            QMessageBox.warning(self, "Warning", "Please connect to API first.")
+            return
+
+        symbol = self.symbol_edit.text().strip().upper()
+        if not symbol:
+            QMessageBox.warning(self, "Warning", "Please enter a symbol.")
+            return
+
+        data_type, adjusted = self._get_data_type_params()
+        output_size = 'full' if 'Full' in self.output_size_combo.currentText() else 'compact'
+
+        self.progress.setVisible(True)
+        self.progress.setValue(0)
+        self.fetch_btn.setEnabled(False)
+
+        try:
+            self.log_widget.log(f"Fetching {data_type} data for {symbol}...", "INFO")
+            self.progress.setValue(30)
+
+            if data_type == 'insider':
+                df = self.client.get_insider_transactions(symbol)
+            else:
+                df = self.client.get_stock_data(
+                    symbol,
+                    interval=data_type,
+                    outputsize=output_size,
+                    adjusted=adjusted
+                )
+
+            self.progress.setValue(80)
+
+            if len(df) > 0:
+                self.log_widget.log(
+                    f"Fetched {len(df)} rows from {df.index.min()} to {df.index.max()}",
+                    "INFO"
+                )
+                self.preview_table.set_dataframe(df.head(50))
+                self._update_cache_info(symbol)
+                self.fetched_df = df
+                self.dataFetched.emit(df)
+            else:
+                self.log_widget.log("No data returned", "WARNING")
+
+            self.progress.setValue(100)
+
+        except Exception as e:
+            self.log_widget.log(f"Fetch failed: {e}", "ERROR")
+            QMessageBox.critical(self, "Error", f"Failed to fetch data: {e}")
+
+        finally:
+            self.fetch_btn.setEnabled(True)
+            self.progress.setVisible(False)
+
+    def _load_cached(self) -> None:
+        """Load cached data for symbol."""
+        if not self.client:
+            return
+
+        symbol = self.symbol_edit.text().strip().upper()
+        if not symbol:
+            return
+
+        data_type, _ = self._get_data_type_params()
+
+        try:
+            df = self.client.load_cached_data(symbol, data_type)
+
+            if df is not None and len(df) > 0:
+                self.log_widget.log(f"Loaded {len(df)} rows from cache", "INFO")
+                self.preview_table.set_dataframe(df.head(50))
+                self.fetched_df = df
+                self.dataFetched.emit(df)
+            else:
+                self.log_widget.log("No cached data found", "WARNING")
+
+        except Exception as e:
+            self.log_widget.log(f"Failed to load cached data: {e}", "ERROR")
+
+    def _export_for_analysis(self) -> None:
+        """Export fetched data to CSV for use in analysis."""
+        if not hasattr(self, 'fetched_df') or self.fetched_df is None:
+            QMessageBox.warning(self, "Warning", "No data to export. Fetch data first.")
+            return
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Export Data", "stock_data.csv",
+            "CSV Files (*.csv)"
+        )
+
+        if filepath:
+            self.fetched_df.to_csv(filepath)
+            self.log_widget.log(f"Exported to {filepath}", "INFO")
+            QMessageBox.information(self, "Success", f"Data exported to {filepath}")
+
+
 class MainWindow(QMainWindow):
-    """Main application window with 5 tabs."""
+    """Main application window with 6 tabs."""
 
     def __init__(self):
         super().__init__()
@@ -873,12 +1241,14 @@ class MainWindow(QMainWindow):
         self.model_tab = ModelTrainingTab()
         self.anomaly_tab = AnomalyDetectionTab()
         self.report_tab = ReportingTab()
+        self.fetch_tab = DataFetcherTab()
 
         self.tabs.addTab(self.data_tab, "1. Data Management")
         self.tabs.addTab(self.feature_tab, "2. Feature Engineering")
         self.tabs.addTab(self.model_tab, "3. Model Training")
         self.tabs.addTab(self.anomaly_tab, "4. Anomaly Detection")
         self.tabs.addTab(self.report_tab, "5. Reporting")
+        self.tabs.addTab(self.fetch_tab, "6. Data Fetcher (Alpha Vantage)")
 
         layout.addWidget(self.tabs)
 

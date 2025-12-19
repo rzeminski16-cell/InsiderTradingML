@@ -23,7 +23,8 @@ from typing import Any, Dict, List, Optional, Union
 import numpy as np
 import pandas as pd
 from openpyxl import Workbook
-from openpyxl.chart import BarChart, LineChart, PieChart, Reference, ScatterChart
+from openpyxl.chart import BarChart, LineChart, PieChart, Reference, ScatterChart, AreaChart
+from openpyxl.chart.series import SeriesLabel
 from openpyxl.chart.label import DataLabelList
 from openpyxl.formatting.rule import ColorScaleRule, FormulaRule
 from openpyxl.styles import (
@@ -850,6 +851,178 @@ class ExcelReporter:
         self._metadata['sheets_added'].append('Appendix')
         self.logger.info("Added Appendix sheet")
 
+    def add_anomaly_timeline(
+        self,
+        anomalies_df: pd.DataFrame,
+        time_column: str = 'window_date',
+        score_column: str = 'anomaly_score',
+        aggregation: str = 'monthly'
+    ) -> None:
+        """
+        Add Sheet: Anomaly Timeline - Time series chart showing anomaly activity over time.
+
+        Args:
+            anomalies_df: DataFrame with anomaly data
+            time_column: Column name for date/time
+            score_column: Column name for anomaly scores
+            aggregation: Time aggregation ('daily', 'weekly', 'monthly', 'quarterly')
+        """
+        ws = self.workbook.create_sheet("Anomaly Timeline")
+
+        row = 1
+
+        # Title
+        ws.cell(row=row, column=1, value="Anomaly Activity Timeline")
+        ws.cell(row=row, column=1).font = Font(bold=True, size=14)
+        row += 2
+
+        if len(anomalies_df) == 0 or time_column not in anomalies_df.columns:
+            ws.cell(row=row, column=1, value="No timeline data available.")
+            self._metadata['sheets_added'].append('Anomaly Timeline')
+            return
+
+        # Prepare time series data
+        df = anomalies_df.copy()
+
+        # Ensure datetime
+        if not pd.api.types.is_datetime64_any_dtype(df[time_column]):
+            df[time_column] = pd.to_datetime(df[time_column])
+
+        # Determine aggregation period
+        if aggregation == 'daily':
+            df['period'] = df[time_column].dt.date
+            period_format = '%Y-%m-%d'
+        elif aggregation == 'weekly':
+            df['period'] = df[time_column].dt.to_period('W').dt.start_time
+            period_format = '%Y-W%V'
+        elif aggregation == 'monthly':
+            df['period'] = df[time_column].dt.to_period('M').dt.start_time
+            period_format = '%Y-%m'
+        else:  # quarterly
+            df['period'] = df[time_column].dt.to_period('Q').dt.start_time
+            period_format = '%Y-Q%q'
+
+        # Aggregate by period
+        timeline_data = df.groupby('period').agg({
+            score_column: ['mean', 'max', 'count'],
+            'is_anomaly': 'sum' if 'is_anomaly' in df.columns else lambda x: 0
+        }).reset_index()
+
+        # Flatten column names
+        timeline_data.columns = ['period', 'avg_score', 'max_score', 'total_windows', 'anomaly_count']
+        timeline_data = timeline_data.sort_values('period')
+
+        # Write section header
+        ws.cell(row=row, column=1, value=f"Anomaly Metrics by {aggregation.title()} Period")
+        ws.cell(row=row, column=1).font = Font(bold=True, size=12)
+        row += 1
+
+        # Write data table
+        headers = ['Period', 'Avg Score', 'Max Score', 'Windows', 'Anomalies']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=row, column=col, value=header)
+            cell.style = self.header_style
+
+        data_start_row = row + 1
+        for i, (_, data_row) in enumerate(timeline_data.iterrows()):
+            r = data_start_row + i
+            ws.cell(row=r, column=1, value=str(data_row['period'])[:10])
+            ws.cell(row=r, column=2, value=round(data_row['avg_score'], 4))
+            ws.cell(row=r, column=3, value=round(data_row['max_score'], 4))
+            ws.cell(row=r, column=4, value=int(data_row['total_windows']))
+            ws.cell(row=r, column=5, value=int(data_row['anomaly_count']))
+
+            for col in range(1, 6):
+                ws.cell(row=r, column=col).style = self.data_style
+
+        row = data_start_row + len(timeline_data) + 2
+
+        # Create Line Chart for Average Anomaly Score
+        if len(timeline_data) > 1:
+            try:
+                # Anomaly Score Trend Chart
+                chart1 = LineChart()
+                chart1.title = "Anomaly Score Trend Over Time"
+                chart1.style = 10
+                chart1.x_axis.title = "Time Period"
+                chart1.y_axis.title = "Anomaly Score"
+                chart1.y_axis.scaling.min = 0
+                chart1.y_axis.scaling.max = 1
+
+                # Average score data
+                avg_data = Reference(ws, min_col=2, min_row=data_start_row - 1,
+                                    max_row=data_start_row + len(timeline_data) - 1)
+                chart1.add_data(avg_data, titles_from_data=True)
+
+                # Max score data
+                max_data = Reference(ws, min_col=3, min_row=data_start_row - 1,
+                                    max_row=data_start_row + len(timeline_data) - 1)
+                chart1.add_data(max_data, titles_from_data=True)
+
+                # Period labels
+                cats = Reference(ws, min_col=1, min_row=data_start_row,
+                               max_row=data_start_row + len(timeline_data) - 1)
+                chart1.set_categories(cats)
+
+                # Style the series
+                chart1.series[0].graphicalProperties.line.width = 25000  # 2.5pt
+                chart1.series[0].graphicalProperties.line.solidFill = "1E88E5"  # Blue
+                if len(chart1.series) > 1:
+                    chart1.series[1].graphicalProperties.line.width = 25000
+                    chart1.series[1].graphicalProperties.line.solidFill = "DC3545"  # Red
+
+                chart1.width = 18
+                chart1.height = 10
+                ws.add_chart(chart1, "G3")
+
+                # Anomaly Count Bar Chart
+                chart2 = BarChart()
+                chart2.title = "Anomaly Count by Period"
+                chart2.style = 10
+                chart2.x_axis.title = "Time Period"
+                chart2.y_axis.title = "Number of Anomalies"
+
+                count_data = Reference(ws, min_col=5, min_row=data_start_row - 1,
+                                      max_row=data_start_row + len(timeline_data) - 1)
+                chart2.add_data(count_data, titles_from_data=True)
+                chart2.set_categories(cats)
+
+                chart2.series[0].graphicalProperties.solidFill = "FF6B6B"
+
+                chart2.width = 18
+                chart2.height = 10
+                ws.add_chart(chart2, "G20")
+
+            except Exception as e:
+                self.logger.warning(f"Could not add timeline charts: {e}")
+
+        # Summary statistics
+        row = max(row, 38)
+        ws.cell(row=row, column=1, value="Timeline Summary")
+        ws.cell(row=row, column=1).font = Font(bold=True, size=12)
+        row += 1
+
+        # Find peak anomaly periods
+        if len(timeline_data) > 0:
+            peak_period = timeline_data.loc[timeline_data['avg_score'].idxmax()]
+            ws.cell(row=row, column=1, value="Peak Anomaly Period:")
+            ws.cell(row=row, column=2, value=str(peak_period['period'])[:10])
+            ws.cell(row=row, column=3, value=f"(Avg: {peak_period['avg_score']:.3f}, Count: {int(peak_period['anomaly_count'])})")
+            row += 1
+
+            # Periods with highest anomaly counts
+            high_anomaly_periods = timeline_data.nlargest(3, 'anomaly_count')
+            ws.cell(row=row, column=1, value="High Activity Periods:")
+            row += 1
+            for _, period_data in high_anomaly_periods.iterrows():
+                ws.cell(row=row, column=1, value=f"  • {str(period_data['period'])[:10]}")
+                ws.cell(row=row, column=2, value=f"{int(period_data['anomaly_count'])} anomalies")
+                ws.cell(row=row, column=3, value=f"(Max Score: {period_data['max_score']:.3f})")
+                row += 1
+
+        self._metadata['sheets_added'].append('Anomaly Timeline')
+        self.logger.info("Added Anomaly Timeline sheet")
+
     def save_and_validate(self) -> Path:
         """
         Save workbook and validate structure.
@@ -936,5 +1109,9 @@ class ExcelReporter:
 
         # Sheet 8: Appendix
         self.add_appendix()
+
+        # Sheet 9: Anomaly Timeline (time series chart)
+        if len(anomalies_df) > 0:
+            self.add_anomaly_timeline(anomalies_df)
 
         return self.save_and_validate()
