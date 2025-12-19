@@ -1,20 +1,27 @@
 """
 Main GUI Application for the Insider Trading Anomaly Detection System.
 
-This module provides the main application window with 5 tabs:
-- Tab 1: Data Management
-- Tab 2: Feature Engineering
-- Tab 3: Model Training & Configuration
-- Tab 4: Anomaly Detection & Scoring
-- Tab 5: Reporting
+This module provides the main application window with 5 tabs for a streamlined workflow:
+- Tab 1: Data Fetcher (Alpha Vantage) - Fetch stock/insider data from API
+- Tab 2: Data Management (CSV) - Load data from local CSV files
+- Tab 3: Feature Engineering - Compute features from transaction data
+- Tab 4: Model Training - Train and save anomaly detection models
+- Tab 5: Detection & Reporting - Detect anomalies and generate Excel reports
+
+Data Flow:
+1. Data can come from either Alpha Vantage (Tab 1) or CSV files (Tab 2)
+2. Alpha Vantage data is auto-split into historical and new transactions
+3. Feature engineering runs on both datasets together for consistency
+4. Models are trained on historical data and can be saved/loaded
+5. Detection & Reporting scores both historical and new data, generates reports
 
 Classes:
     MainWindow: Main application window
-    DataManagementTab: Tab for loading and previewing data
+    DataFetcherTab: Tab for fetching data from Alpha Vantage API
+    DataManagementTab: Tab for loading CSV data
     FeatureEngineeringTab: Tab for feature engineering
     ModelTrainingTab: Tab for model training and configuration
-    AnomalyDetectionTab: Tab for anomaly detection and scoring
-    ReportingTab: Tab for report generation
+    AnomalyReportTab: Combined tab for anomaly detection and report generation
 """
 
 import sys
@@ -198,19 +205,38 @@ class DataManagementTab(QWidget):
 
 
 class FeatureEngineeringTab(QWidget):
-    """Tab 2: Feature Engineering - Configure and create features."""
+    """Tab 2: Feature Engineering - Configure and create features for both datasets."""
 
-    featuresReady = pyqtSignal(object, object)
+    featuresReady = pyqtSignal(object, object, object)  # (engineer, historical_features, new_features)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.logger = setup_logging(__name__)
         self.feature_engineer: Optional[FeatureEngineer] = None
-        self.feature_matrix: Optional[pd.DataFrame] = None
+        self.historical_features: Optional[pd.DataFrame] = None
+        self.new_features: Optional[pd.DataFrame] = None
+        self.historical_df: Optional[pd.DataFrame] = None
+        self.new_transactions_df: Optional[pd.DataFrame] = None
         self._setup_ui()
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
+
+        # Data status section
+        data_group = QGroupBox("Data Status")
+        data_layout = QGridLayout(data_group)
+
+        data_layout.addWidget(QLabel("Historical Data:"), 0, 0)
+        self.historical_status = QLabel("Not loaded")
+        self.historical_status.setStyleSheet("color: gray;")
+        data_layout.addWidget(self.historical_status, 0, 1)
+
+        data_layout.addWidget(QLabel("New Transactions:"), 0, 2)
+        self.new_status = QLabel("Not loaded")
+        self.new_status.setStyleSheet("color: gray;")
+        data_layout.addWidget(self.new_status, 0, 3)
+
+        layout.addWidget(data_group)
 
         # Window configuration
         window_group = QGroupBox("Step 1: Configure Time Window")
@@ -255,7 +281,7 @@ class FeatureEngineeringTab(QWidget):
         run_group = QGroupBox("Step 3: Run Feature Engineering")
         run_layout = QVBoxLayout(run_group)
 
-        self.run_btn = QPushButton("Run Feature Engineering")
+        self.run_btn = QPushButton("Run Feature Engineering on Both Datasets")
         self.run_btn.clicked.connect(self._run_engineering)
         run_layout.addWidget(self.run_btn)
 
@@ -269,32 +295,58 @@ class FeatureEngineeringTab(QWidget):
         layout.addWidget(run_group)
 
         # Results section
-        results_group = QGroupBox("Feature Matrix")
-        results_layout = QVBoxLayout(results_group)
+        results_group = QGroupBox("Feature Matrices")
+        results_layout = QGridLayout(results_group)
 
-        self.results_label = QLabel("No feature matrix generated yet")
-        results_layout.addWidget(self.results_label)
+        results_layout.addWidget(QLabel("Historical Features:"), 0, 0)
+        self.historical_result = QLabel("Not generated")
+        results_layout.addWidget(self.historical_result, 0, 1)
+
+        results_layout.addWidget(QLabel("New Transaction Features:"), 1, 0)
+        self.new_result = QLabel("Not generated")
+        results_layout.addWidget(self.new_result, 1, 1)
 
         button_row = QHBoxLayout()
-        self.preview_btn = QPushButton("Preview Matrix")
-        self.preview_btn.clicked.connect(self._preview_matrix)
-        self.preview_btn.setEnabled(False)
-        self.export_btn = QPushButton("Export to CSV")
-        self.export_btn.clicked.connect(self._export_matrix)
-        self.export_btn.setEnabled(False)
-        button_row.addWidget(self.preview_btn)
-        button_row.addWidget(self.export_btn)
+        self.save_btn = QPushButton("Save Feature Matrices")
+        self.save_btn.clicked.connect(self._save_matrices)
+        self.save_btn.setEnabled(False)
+        button_row.addWidget(self.save_btn)
         button_row.addStretch()
-        results_layout.addLayout(button_row)
+        results_layout.addLayout(button_row, 2, 0, 1, 2)
 
         layout.addWidget(results_group)
 
     def set_data(self, preprocessor: DataPreprocessor) -> None:
+        """Set data from DataPreprocessor (legacy support)."""
         self.preprocessor = preprocessor
+        self.historical_df = preprocessor.df
+        self.new_transactions_df = None
+        self._update_data_status()
+
+    def set_split_data(self, historical_df: pd.DataFrame, new_df: pd.DataFrame) -> None:
+        """Set split data from Alpha Vantage fetcher."""
+        self.historical_df = historical_df
+        self.new_transactions_df = new_df
+        self._update_data_status()
+
+    def _update_data_status(self) -> None:
+        if self.historical_df is not None and len(self.historical_df) > 0:
+            self.historical_status.setText(f"{len(self.historical_df)} rows")
+            self.historical_status.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.historical_status.setText("Not loaded")
+            self.historical_status.setStyleSheet("color: gray;")
+
+        if self.new_transactions_df is not None and len(self.new_transactions_df) > 0:
+            self.new_status.setText(f"{len(self.new_transactions_df)} rows")
+            self.new_status.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.new_status.setText("None")
+            self.new_status.setStyleSheet("color: gray;")
 
     def _run_engineering(self) -> None:
-        if not hasattr(self, 'preprocessor') or self.preprocessor is None:
-            QMessageBox.warning(self, "Warning", "Please load data first.")
+        if self.historical_df is None or len(self.historical_df) == 0:
+            QMessageBox.warning(self, "Warning", "Please load historical data first.")
             return
 
         selected_features = self.feature_tree.get_selected_features()
@@ -307,39 +359,67 @@ class FeatureEngineeringTab(QWidget):
         self.run_btn.setEnabled(False)
 
         try:
+            window_days = self.window_spin.value()
             self.log_widget.log("Starting feature engineering...", "INFO")
 
-            window_days = self.window_spin.value()
-            self.feature_engineer = FeatureEngineer(
-                self.preprocessor.df,
-                window_days
-            )
+            # Combine datasets for consistent feature calculation
+            if self.new_transactions_df is not None and len(self.new_transactions_df) > 0:
+                # Mark the split point
+                historical_end_idx = len(self.historical_df)
+                combined_df = pd.concat([self.historical_df, self.new_transactions_df], ignore_index=False)
+                self.log_widget.log(f"Combined {len(self.historical_df)} historical + {len(self.new_transactions_df)} new rows", "INFO")
+            else:
+                combined_df = self.historical_df
+                historical_end_idx = len(combined_df)
 
+            self.progress.setValue(20)
+
+            # Create feature engineer on combined data
+            self.feature_engineer = FeatureEngineer(combined_df, window_days)
             self.log_widget.log(f"Aggregating by {window_days}-day windows...", "INFO")
-            self.progress.setValue(25)
 
             self.feature_engineer.aggregate_by_window()
             self.progress.setValue(50)
 
             self.log_widget.log(f"Creating {len(selected_features)} features...", "INFO")
 
-            self.feature_matrix = self.feature_engineer.create_feature_matrix(
-                selected_features
-            )
+            # Create combined feature matrix
+            combined_features = self.feature_engineer.create_feature_matrix(selected_features)
+            self.progress.setValue(80)
+
+            # Split back into historical and new
+            if self.new_transactions_df is not None and len(self.new_transactions_df) > 0:
+                # Find split point based on dates
+                historical_max_date = self.historical_df.index.max()
+                self.historical_features = combined_features[combined_features.index <= historical_max_date]
+                self.new_features = combined_features[combined_features.index > historical_max_date]
+
+                self.log_widget.log(
+                    f"Split features: {len(self.historical_features)} historical, {len(self.new_features)} new",
+                    "INFO"
+                )
+            else:
+                self.historical_features = combined_features
+                self.new_features = pd.DataFrame()
+
             self.progress.setValue(100)
 
-            self.log_widget.log(
-                f"Feature matrix created: {self.feature_matrix.shape}", "INFO"
+            # Update UI
+            self.historical_result.setText(
+                f"{self.historical_features.shape[0]} windows × {self.historical_features.shape[1]} features"
             )
+            if len(self.new_features) > 0:
+                self.new_result.setText(
+                    f"{self.new_features.shape[0]} windows × {self.new_features.shape[1]} features"
+                )
+            else:
+                self.new_result.setText("No new data")
 
-            self.results_label.setText(
-                f"Feature Matrix: {self.feature_matrix.shape[0]} windows × "
-                f"{self.feature_matrix.shape[1]} features"
-            )
-            self.preview_btn.setEnabled(True)
-            self.export_btn.setEnabled(True)
+            self.save_btn.setEnabled(True)
+            self.log_widget.log("Feature engineering complete!", "INFO")
 
-            self.featuresReady.emit(self.feature_engineer, self.feature_matrix)
+            # Emit signal with both feature matrices
+            self.featuresReady.emit(self.feature_engineer, self.historical_features, self.new_features)
 
         except Exception as e:
             self.log_widget.log(f"Error: {str(e)}", "ERROR")
@@ -349,38 +429,45 @@ class FeatureEngineeringTab(QWidget):
             self.run_btn.setEnabled(True)
             self.progress.setVisible(False)
 
-    def _preview_matrix(self) -> None:
-        if self.feature_matrix is None:
+    def _save_matrices(self) -> None:
+        """Save feature matrices to CSV files."""
+        if self.historical_features is None:
             return
 
-        dialog = QMessageBox(self)
-        dialog.setWindowTitle("Feature Matrix Preview")
-        dialog.setText(str(self.feature_matrix.head(10)))
-        dialog.exec_()
-
-    def _export_matrix(self) -> None:
-        if self.feature_matrix is None:
+        save_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Save Features")
+        if not save_dir:
             return
 
-        filepath, _ = QFileDialog.getSaveFileName(
-            self, "Save Feature Matrix", "feature_matrix.csv",
-            "CSV Files (*.csv)"
-        )
-        if filepath:
-            self.feature_matrix.to_csv(filepath)
-            QMessageBox.information(self, "Success", f"Exported to {filepath}")
+        try:
+            # Save historical features
+            hist_path = Path(save_dir) / "historical_features.csv"
+            self.historical_features.to_csv(hist_path)
+            self.log_widget.log(f"Saved historical features to {hist_path}", "INFO")
+
+            # Save new features if available
+            if self.new_features is not None and len(self.new_features) > 0:
+                new_path = Path(save_dir) / "new_transaction_features.csv"
+                self.new_features.to_csv(new_path)
+                self.log_widget.log(f"Saved new transaction features to {new_path}", "INFO")
+
+            QMessageBox.information(self, "Success", f"Feature matrices saved to {save_dir}")
+
+        except Exception as e:
+            self.log_widget.log(f"Error saving: {e}", "ERROR")
+            QMessageBox.critical(self, "Error", str(e))
 
 
 class ModelTrainingTab(QWidget):
-    """Tab 3: Model Training & Configuration."""
+    """Tab 3: Model Training & Configuration with model saving."""
 
-    modelsReady = pyqtSignal(object)
+    modelsReady = pyqtSignal(object, object, object)  # (model_factory, training_metrics, new_features)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.logger = setup_logging(__name__)
         self.model_factory: Optional[ModelFactory] = None
-        self.feature_matrix: Optional[pd.DataFrame] = None
+        self.historical_features: Optional[pd.DataFrame] = None
+        self.new_features: Optional[pd.DataFrame] = None
         self.training_metrics: Dict = {}
         self._setup_ui()
 
@@ -439,8 +526,8 @@ class ModelTrainingTab(QWidget):
 
         layout.addWidget(train_group)
 
-        # Results
-        results_group = QGroupBox("Step 4: Model Comparison")
+        # Results and Save
+        results_group = QGroupBox("Step 4: Model Results & Save")
         results_layout = QVBoxLayout(results_group)
 
         self.results_table = QTableWidget()
@@ -450,11 +537,30 @@ class ModelTrainingTab(QWidget):
         ])
         results_layout.addWidget(self.results_table)
 
+        save_layout = QHBoxLayout()
+        self.save_models_btn = QPushButton("Save Trained Models")
+        self.save_models_btn.clicked.connect(self._save_models)
+        self.save_models_btn.setEnabled(False)
+        save_layout.addWidget(self.save_models_btn)
+
+        self.load_models_btn = QPushButton("Load Saved Models")
+        self.load_models_btn.clicked.connect(self._load_models)
+        save_layout.addWidget(self.load_models_btn)
+
+        save_layout.addStretch()
+        results_layout.addLayout(save_layout)
+
+        self.model_path_label = QLabel("")
+        results_layout.addWidget(self.model_path_label)
+
         layout.addWidget(results_group)
 
-    def set_feature_matrix(self, feature_engineer, feature_matrix: pd.DataFrame) -> None:
+    def set_feature_matrix(self, feature_engineer, historical_features: pd.DataFrame, new_features: pd.DataFrame) -> None:
+        """Set feature matrices from feature engineering tab."""
         self.feature_engineer = feature_engineer
-        self.feature_matrix = feature_matrix
+        self.historical_features = historical_features
+        self.new_features = new_features
+        self.train_log.log(f"Received features: {len(historical_features)} historical, {len(new_features) if new_features is not None else 0} new", "INFO")
 
     def _configure_models(self) -> None:
         selected = [m for m, cb in self.model_checks.items() if cb.isChecked()]
@@ -470,7 +576,7 @@ class ModelTrainingTab(QWidget):
                 self.train_log.log(f"Configured {model_type}: {params}", "INFO")
 
     def _train_models(self) -> None:
-        if self.feature_matrix is None:
+        if self.historical_features is None:
             QMessageBox.warning(self, "Warning", "Please generate features first.")
             return
 
@@ -485,8 +591,8 @@ class ModelTrainingTab(QWidget):
 
         try:
             self.model_factory = ModelFactory()
-            X = self.feature_matrix.values
-            feature_names = list(self.feature_matrix.columns)
+            X = self.historical_features.values
+            feature_names = list(self.historical_features.columns)
 
             for i, model_type in enumerate(selected):
                 self.train_log.log(f"Training {model_type}...", "INFO")
@@ -507,7 +613,8 @@ class ModelTrainingTab(QWidget):
             self.train_progress.setValue(100)
             self._update_results_table()
 
-            self.modelsReady.emit(self.model_factory)
+            self.save_models_btn.setEnabled(True)
+            self.modelsReady.emit(self.model_factory, self.training_metrics, self.new_features)
             self.train_log.log("All models trained successfully!", "INFO")
 
         except Exception as e:
@@ -530,120 +637,293 @@ class ModelTrainingTab(QWidget):
 
         self.results_table.resizeColumnsToContents()
 
+    def _save_models(self) -> None:
+        """Save trained models to disk."""
+        if self.model_factory is None:
+            QMessageBox.warning(self, "Warning", "No trained models to save.")
+            return
 
-class AnomalyDetectionTab(QWidget):
-    """Tab 4: Anomaly Detection & Scoring."""
+        save_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Save Models")
+        if not save_dir:
+            return
+
+        try:
+            import joblib
+            save_path = Path(save_dir)
+
+            for model_name, model_info in self.model_factory.models.items():
+                model_file = save_path / f"{model_name}.joblib"
+                joblib.dump({
+                    'model': model_info['model'],
+                    'model_type': model_info['model_type'],
+                    'hyperparameters': model_info['hyperparameters'],
+                    'feature_names': model_info.get('feature_names', []),
+                    'training_metrics': self.training_metrics.get(model_name, {})
+                }, model_file)
+                self.train_log.log(f"Saved {model_name} to {model_file}", "INFO")
+
+            self.model_path_label.setText(f"Models saved to: {save_dir}")
+            QMessageBox.information(self, "Success", f"Saved {len(self.model_factory.models)} models to {save_dir}")
+
+        except Exception as e:
+            self.train_log.log(f"Error saving models: {e}", "ERROR")
+            QMessageBox.critical(self, "Error", str(e))
+
+    def _load_models(self) -> None:
+        """Load previously saved models."""
+        load_dir = QFileDialog.getExistingDirectory(self, "Select Directory with Saved Models")
+        if not load_dir:
+            return
+
+        try:
+            import joblib
+            load_path = Path(load_dir)
+            model_files = list(load_path.glob("*.joblib"))
+
+            if not model_files:
+                QMessageBox.warning(self, "Warning", "No model files found in directory.")
+                return
+
+            self.model_factory = ModelFactory()
+
+            for model_file in model_files:
+                data = joblib.load(model_file)
+                model_name = model_file.stem
+
+                self.model_factory.models[model_name] = {
+                    'model': data['model'],
+                    'model_type': data['model_type'],
+                    'hyperparameters': data['hyperparameters'],
+                    'feature_names': data.get('feature_names', []),
+                    'is_trained': True
+                }
+                self.training_metrics[model_name] = data.get('training_metrics', {})
+                self.train_log.log(f"Loaded {model_name}", "INFO")
+
+            self._update_results_table()
+            self.save_models_btn.setEnabled(True)
+            self.model_path_label.setText(f"Models loaded from: {load_dir}")
+            self.modelsReady.emit(self.model_factory, self.training_metrics, self.new_features)
+
+            QMessageBox.information(self, "Success", f"Loaded {len(model_files)} models")
+
+        except Exception as e:
+            self.train_log.log(f"Error loading models: {e}", "ERROR")
+            QMessageBox.critical(self, "Error", str(e))
+
+
+class AnomalyReportTab(QWidget):
+    """Tab 4: Anomaly Detection & Report Generation (Combined)."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.logger = setup_logging(__name__)
         self.model_factory: Optional[ModelFactory] = None
         self.feature_matrix: Optional[pd.DataFrame] = None
+        self.new_features: Optional[pd.DataFrame] = None
+        self.training_metrics: Dict = {}
         self.scorer = AnomalyScorer()
+        self.anomalies_df: Optional[pd.DataFrame] = None
+        self.new_scored_df: Optional[pd.DataFrame] = None
         self._setup_ui()
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        # Model selection
-        model_group = QGroupBox("Step 1: Select Model")
-        model_layout = QHBoxLayout(model_group)
+        # Create scrollable area for all content
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
 
-        model_layout.addWidget(QLabel("Active Model:"))
+        # Model selection and threshold in same row
+        config_group = QGroupBox("Step 1: Configure Anomaly Detection")
+        config_layout = QGridLayout(config_group)
+
+        config_layout.addWidget(QLabel("Active Model:"), 0, 0)
         self.model_combo = QComboBox()
-        model_layout.addWidget(self.model_combo)
+        config_layout.addWidget(self.model_combo, 0, 1)
 
         self.ensemble_check = QCheckBox("Use Ensemble (all models)")
-        model_layout.addWidget(self.ensemble_check)
-
-        layout.addWidget(model_group)
+        config_layout.addWidget(self.ensemble_check, 0, 2, 1, 2)
 
         # Threshold configuration
-        threshold_group = QGroupBox("Step 2: Configure Threshold")
-        threshold_layout = QGridLayout(threshold_group)
-
         self.threshold_group = QButtonGroup()
-        self.percentile_radio = QRadioButton("Percentile:")
+        self.percentile_radio = QRadioButton("Percentile threshold:")
         self.percentile_radio.setChecked(True)
         self.threshold_group.addButton(self.percentile_radio)
-        threshold_layout.addWidget(self.percentile_radio, 0, 0)
+        config_layout.addWidget(self.percentile_radio, 1, 0)
 
         self.percentile_spin = QSpinBox()
         self.percentile_spin.setMinimum(80)
         self.percentile_spin.setMaximum(99)
         self.percentile_spin.setValue(95)
-        threshold_layout.addWidget(self.percentile_spin, 0, 1)
+        self.percentile_spin.setSuffix(" %ile")
+        config_layout.addWidget(self.percentile_spin, 1, 1)
 
         self.fixed_radio = QRadioButton("Fixed threshold:")
         self.threshold_group.addButton(self.fixed_radio)
-        threshold_layout.addWidget(self.fixed_radio, 1, 0)
+        config_layout.addWidget(self.fixed_radio, 1, 2)
 
         self.threshold_spin = QDoubleSpinBox()
         self.threshold_spin.setMinimum(0.0)
         self.threshold_spin.setMaximum(1.0)
         self.threshold_spin.setValue(0.75)
         self.threshold_spin.setSingleStep(0.05)
-        threshold_layout.addWidget(self.threshold_spin, 1, 1)
+        config_layout.addWidget(self.threshold_spin, 1, 3)
 
-        layout.addWidget(threshold_group)
+        scroll_layout.addWidget(config_group)
 
-        # Detection
-        detect_group = QGroupBox("Step 3: Detect Historical Anomalies")
+        # Detection section
+        detect_group = QGroupBox("Step 2: Detect Anomalies")
         detect_layout = QVBoxLayout(detect_group)
 
-        self.detect_btn = QPushButton("Detect Anomalies")
+        btn_layout = QHBoxLayout()
+        self.detect_btn = QPushButton("Detect Anomalies on Historical Data")
         self.detect_btn.clicked.connect(self._detect_anomalies)
-        detect_layout.addWidget(self.detect_btn)
+        btn_layout.addWidget(self.detect_btn)
 
+        self.score_new_btn = QPushButton("Score New Transactions")
+        self.score_new_btn.clicked.connect(self._score_new_transactions)
+        self.score_new_btn.setEnabled(False)
+        btn_layout.addWidget(self.score_new_btn)
+        detect_layout.addLayout(btn_layout)
+
+        # Status labels
+        status_layout = QHBoxLayout()
+        self.historical_status = QLabel("Historical: Not analyzed")
+        self.historical_status.setStyleSheet("color: gray;")
+        status_layout.addWidget(self.historical_status)
+
+        self.new_status = QLabel("New Transactions: Not scored")
+        self.new_status.setStyleSheet("color: gray;")
+        status_layout.addWidget(self.new_status)
+        detect_layout.addLayout(status_layout)
+
+        # Anomaly results table
         self.anomaly_table = DataPreviewTable()
+        self.anomaly_table.setMaximumHeight(200)
         detect_layout.addWidget(self.anomaly_table)
 
-        layout.addWidget(detect_group)
+        scroll_layout.addWidget(detect_group)
 
-        # New transactions
-        new_group = QGroupBox("Step 4: Score New Transactions")
-        new_layout = QVBoxLayout(new_group)
+        # Report configuration
+        report_group = QGroupBox("Step 3: Configure Report")
+        report_layout = QGridLayout(report_group)
 
-        btn_layout = QHBoxLayout()
-        self.load_new_btn = QPushButton("Load New Transactions")
-        self.load_new_btn.clicked.connect(self._load_new_transactions)
-        self.score_btn = QPushButton("Score Transactions")
-        self.score_btn.clicked.connect(self._score_new)
-        self.score_btn.setEnabled(False)
-        btn_layout.addWidget(self.load_new_btn)
-        btn_layout.addWidget(self.score_btn)
-        new_layout.addLayout(btn_layout)
+        # Report sections (compact layout)
+        sections_label = QLabel("Include sections:")
+        report_layout.addWidget(sections_label, 0, 0)
 
-        self.new_table = DataPreviewTable()
-        new_layout.addWidget(self.new_table)
+        self.section_checks = {}
+        sections = [
+            ("summary", "Executive Summary"),
+            ("anomalies", "Historical Anomalies"),
+            ("features", "Feature Details"),
+            ("models", "Model Performance"),
+            ("new_scores", "New Transaction Scores"),
+            ("timeline", "Anomaly Timeline Chart"),
+            ("specs", "Technical Specs"),
+            ("appendix", "Appendix")
+        ]
 
-        layout.addWidget(new_group)
+        # Arrange in 2 columns
+        for i, (key, label) in enumerate(sections):
+            cb = QCheckBox(label)
+            cb.setChecked(True)
+            self.section_checks[key] = cb
+            row = (i // 4) + 1
+            col = i % 4
+            report_layout.addWidget(cb, row, col)
 
-    def set_models(self, model_factory: ModelFactory) -> None:
+        # Report title
+        report_layout.addWidget(QLabel("Report Title:"), 3, 0)
+        self.title_edit = QLineEdit("Insider Trading Anomaly Analysis Report")
+        report_layout.addWidget(self.title_edit, 3, 1, 1, 3)
+
+        scroll_layout.addWidget(report_group)
+
+        # Generate section
+        generate_group = QGroupBox("Step 4: Generate Report")
+        generate_layout = QVBoxLayout(generate_group)
+
+        gen_btn_layout = QHBoxLayout()
+        self.generate_btn = QPushButton("Generate Excel Report")
+        self.generate_btn.clicked.connect(self._generate_report)
+        self.generate_btn.setStyleSheet("font-weight: bold; padding: 10px;")
+        gen_btn_layout.addWidget(self.generate_btn)
+
+        self.open_btn = QPushButton("Open Report")
+        self.open_btn.clicked.connect(self._open_report)
+        self.open_btn.setEnabled(False)
+        gen_btn_layout.addWidget(self.open_btn)
+        generate_layout.addLayout(gen_btn_layout)
+
+        self.progress = QProgressBar()
+        self.progress.setVisible(False)
+        generate_layout.addWidget(self.progress)
+
+        self.output_label = QLabel("")
+        self.output_label.setStyleSheet("color: green;")
+        generate_layout.addWidget(self.output_label)
+
+        self.log_widget = LogWidget()
+        self.log_widget.setMaximumHeight(120)
+        generate_layout.addWidget(self.log_widget)
+
+        scroll_layout.addWidget(generate_group)
+
+        layout.addWidget(scroll_content)
+
+    def set_models(self, model_factory: ModelFactory, training_metrics: Dict, new_features: pd.DataFrame) -> None:
+        """Set models and new features from training tab."""
         self.model_factory = model_factory
+        self.training_metrics = training_metrics
+        self.new_features = new_features
+
         self.model_combo.clear()
         for name in model_factory.models.keys():
             self.model_combo.addItem(name)
 
-    def set_feature_matrix(self, feature_engineer, feature_matrix: pd.DataFrame) -> None:
+        if new_features is not None and len(new_features) > 0:
+            self.score_new_btn.setEnabled(True)
+            self.new_status.setText(f"New Transactions: {len(new_features)} windows ready")
+            self.new_status.setStyleSheet("color: blue;")
+
+        self.log_widget.log(f"Loaded {len(model_factory.models)} models", "INFO")
+
+    def set_feature_matrix(self, feature_engineer, historical_features: pd.DataFrame, new_features: pd.DataFrame) -> None:
+        """Set feature matrices from feature engineering tab."""
         self.feature_engineer = feature_engineer
-        self.feature_matrix = feature_matrix
+        self.feature_matrix = historical_features
+        self.new_features = new_features
+
+        if new_features is not None and len(new_features) > 0:
+            self.score_new_btn.setEnabled(True)
+            self.new_status.setText(f"New Transactions: {len(new_features)} windows ready")
+            self.new_status.setStyleSheet("color: blue;")
 
     def _detect_anomalies(self) -> None:
+        """Detect anomalies in historical data."""
         if self.model_factory is None or self.feature_matrix is None:
-            QMessageBox.warning(self, "Warning", "Please train models first.")
+            QMessageBox.warning(self, "Warning", "Please train models and generate features first.")
             return
 
         try:
             model_name = self.model_combo.currentText()
+            if not model_name:
+                QMessageBox.warning(self, "Warning", "Please select a model.")
+                return
+
             X = self.feature_matrix.values
             window_dates = self.feature_matrix.index
+
+            self.log_widget.log(f"Detecting anomalies using {model_name}...", "INFO")
 
             if self.percentile_radio.isChecked():
                 percentile = self.percentile_spin.value()
                 results = self.model_factory.detect_historical_anomalies(
                     model_name, X, window_dates, percentile
                 )
+                self.log_widget.log(f"Using {percentile}th percentile threshold", "INFO")
             else:
                 scores = self.model_factory.score(model_name, X)
                 threshold = self.threshold_spin.value()
@@ -652,6 +932,7 @@ class AnomalyDetectionTab(QWidget):
                     'anomaly_score': scores,
                     'is_anomaly': (scores >= threshold).astype(int)
                 })
+                self.log_widget.log(f"Using fixed threshold: {threshold}", "INFO")
 
             # Add risk levels
             results['risk_level'] = results['anomaly_score'].apply(
@@ -661,171 +942,133 @@ class AnomalyDetectionTab(QWidget):
             self.anomaly_table.set_dataframe(results, risk_column='risk_level')
             self.anomalies_df = results
 
+            n_anomalies = len(results[results['is_anomaly'] == 1])
+            self.historical_status.setText(f"Historical: {n_anomalies} anomalies found")
+            self.historical_status.setStyleSheet("color: green; font-weight: bold;")
+
+            self.log_widget.log(f"Found {n_anomalies} anomalies in {len(results)} windows", "INFO")
+
         except Exception as e:
+            self.log_widget.log(f"Error: {e}", "ERROR")
             QMessageBox.critical(self, "Error", str(e))
 
-    def _load_new_transactions(self) -> None:
-        filepath, _ = QFileDialog.getOpenFileName(
-            self, "Open New Transactions CSV", "",
-            "CSV Files (*.csv)"
-        )
-        if filepath:
-            try:
-                self.new_df = pd.read_csv(filepath)
-                self.new_table.set_dataframe(self.new_df)
-                self.score_btn.setEnabled(True)
-            except Exception as e:
-                QMessageBox.critical(self, "Error", str(e))
+    def _score_new_transactions(self) -> None:
+        """Score new transactions using trained model."""
+        if self.model_factory is None or self.new_features is None or len(self.new_features) == 0:
+            QMessageBox.warning(self, "Warning", "No new transaction features available.")
+            return
 
-    def _score_new(self) -> None:
-        QMessageBox.information(
-            self, "Info",
-            "New transaction scoring requires feature engineering on new data. "
-            "This feature aggregates the new transactions and scores them."
-        )
+        try:
+            model_name = self.model_combo.currentText()
+            if not model_name:
+                QMessageBox.warning(self, "Warning", "Please select a model.")
+                return
 
+            X = self.new_features.values
+            window_dates = self.new_features.index
 
-class ReportingTab(QWidget):
-    """Tab 5: Reporting - Generate Excel reports."""
+            self.log_widget.log(f"Scoring {len(X)} new windows using {model_name}...", "INFO")
 
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.logger = setup_logging(__name__)
-        self._setup_ui()
+            scores = self.model_factory.score(model_name, X)
 
-    def _setup_ui(self) -> None:
-        layout = QVBoxLayout(self)
+            # Determine threshold
+            if self.percentile_radio.isChecked():
+                percentile = self.percentile_spin.value()
+                threshold = np.percentile(scores, percentile)
+            else:
+                threshold = self.threshold_spin.value()
 
-        # Report sections
-        sections_group = QGroupBox("Report Sections")
-        sections_layout = QVBoxLayout(sections_group)
+            self.new_scored_df = pd.DataFrame({
+                'window_date': window_dates,
+                'anomaly_score': scores,
+                'is_anomaly': (scores >= threshold).astype(int),
+                'risk_level': [self.scorer.get_risk_level(s) for s in scores]
+            })
 
-        self.section_checks = {}
-        sections = [
-            ("summary", "Executive Summary"),
-            ("anomalies", "Historical Anomalies"),
-            ("features", "Feature Engineering Details"),
-            ("models", "Model Performance"),
-            ("new_scores", "New Transaction Scoring"),
-            ("explanations", "Anomaly Explanations"),
-            ("specs", "Technical Specifications"),
-            ("appendix", "Appendix & Methodology")
-        ]
+            n_anomalies = len(self.new_scored_df[self.new_scored_df['is_anomaly'] == 1])
+            self.new_status.setText(f"New Transactions: {n_anomalies} anomalies in {len(self.new_scored_df)} windows")
+            self.new_status.setStyleSheet("color: green; font-weight: bold;")
 
-        for key, label in sections:
-            cb = QCheckBox(label)
-            cb.setChecked(True)
-            self.section_checks[key] = cb
-            sections_layout.addWidget(cb)
+            self.log_widget.log(f"Scored {len(self.new_scored_df)} new windows, {n_anomalies} anomalies", "INFO")
 
-        layout.addWidget(sections_group)
-
-        # Report info
-        info_group = QGroupBox("Report Information")
-        info_layout = QGridLayout(info_group)
-
-        info_layout.addWidget(QLabel("Report Title:"), 0, 0)
-        self.title_edit = QLineEdit("Insider Trading Anomaly Analysis Report")
-        info_layout.addWidget(self.title_edit, 0, 1)
-
-        info_layout.addWidget(QLabel("Description:"), 1, 0)
-        self.desc_edit = QLineEdit()
-        info_layout.addWidget(self.desc_edit, 1, 1)
-
-        layout.addWidget(info_group)
-
-        # Generate
-        generate_group = QGroupBox("Generate Report")
-        generate_layout = QVBoxLayout(generate_group)
-
-        self.generate_btn = QPushButton("Generate Excel Report")
-        self.generate_btn.clicked.connect(self._generate_report)
-        generate_layout.addWidget(self.generate_btn)
-
-        self.progress = QProgressBar()
-        self.progress.setVisible(False)
-        generate_layout.addWidget(self.progress)
-
-        self.output_label = QLabel("")
-        generate_layout.addWidget(self.output_label)
-
-        self.open_btn = QPushButton("Open Report")
-        self.open_btn.clicked.connect(self._open_report)
-        self.open_btn.setEnabled(False)
-        generate_layout.addWidget(self.open_btn)
-
-        layout.addWidget(generate_group)
-
-        layout.addStretch()
-
-    def set_data(
-        self,
-        preprocessor,
-        feature_engineer,
-        feature_matrix,
-        model_factory,
-        training_metrics,
-        anomalies_df
-    ) -> None:
-        self.preprocessor = preprocessor
-        self.feature_engineer = feature_engineer
-        self.feature_matrix = feature_matrix
-        self.model_factory = model_factory
-        self.training_metrics = training_metrics
-        self.anomalies_df = anomalies_df
+        except Exception as e:
+            self.log_widget.log(f"Error scoring: {e}", "ERROR")
+            QMessageBox.critical(self, "Error", str(e))
 
     def _generate_report(self) -> None:
-        if not hasattr(self, 'feature_matrix') or self.feature_matrix is None:
-            QMessageBox.warning(self, "Warning", "No data available for report.")
+        """Generate Excel report with all data."""
+        if self.anomalies_df is None:
+            QMessageBox.warning(self, "Warning", "Please detect anomalies first.")
             return
 
         try:
             self.progress.setVisible(True)
             self.progress.setValue(0)
+            self.log_widget.log("Generating report...", "INFO")
 
             filepath = constants.REPORTS_DIR / f"{get_timestamp()}_report.xlsx"
 
             reporter = ExcelReporter(
                 filepath,
                 self.title_edit.text(),
-                self.desc_edit.text()
+                ""
             )
 
-            self.progress.setValue(20)
+            self.progress.setValue(10)
 
             # Prepare summary data
             summary_data = {
-                'total_transactions': len(self.preprocessor.df) if hasattr(self, 'preprocessor') else 0,
-                'n_windows': len(self.feature_matrix),
-                'n_features': self.feature_matrix.shape[1],
-                'n_models': len(self.training_metrics) if hasattr(self, 'training_metrics') else 0,
-                'n_anomalies': len(self.anomalies_df[self.anomalies_df['is_anomaly'] == 1]) if hasattr(self, 'anomalies_df') else 0,
+                'total_transactions': len(self.feature_matrix) if self.feature_matrix is not None else 0,
+                'n_windows': len(self.feature_matrix) if self.feature_matrix is not None else 0,
+                'n_features': self.feature_matrix.shape[1] if self.feature_matrix is not None else 0,
+                'n_models': len(self.training_metrics),
+                'n_anomalies': len(self.anomalies_df[self.anomalies_df['is_anomaly'] == 1]) if self.anomalies_df is not None else 0,
                 'window_days': 14,
-                'date_range': self.preprocessor.get_summary_stats().get('date_range', {}) if hasattr(self, 'preprocessor') else {}
+                'date_range': {}
             }
 
-            feature_stats = self.feature_engineer.get_feature_statistics() if hasattr(self, 'feature_engineer') else {}
+            feature_stats = {}
+            if hasattr(self, 'feature_engineer') and self.feature_engineer is not None:
+                feature_stats = self.feature_engineer.get_feature_statistics()
 
-            self.progress.setValue(50)
+            self.progress.setValue(30)
+            self.log_widget.log("Adding report sections...", "INFO")
 
+            # Generate selected sections
             output_path = reporter.generate_full_report(
                 summary_data=summary_data,
-                anomalies_df=getattr(self, 'anomalies_df', pd.DataFrame()),
-                feature_stats=feature_stats,
-                training_metrics=getattr(self, 'training_metrics', {}),
-                new_transactions_df=None,
+                anomalies_df=self.anomalies_df if self.section_checks['anomalies'].isChecked() else pd.DataFrame(),
+                feature_stats=feature_stats if self.section_checks['features'].isChecked() else {},
+                training_metrics=self.training_metrics if self.section_checks['models'].isChecked() else {},
+                new_transactions_df=self.new_scored_df if self.section_checks['new_scores'].isChecked() else None,
                 explanations=[],
-                specs_data={'n_windows': len(self.feature_matrix)}
+                specs_data={'n_windows': len(self.feature_matrix) if self.feature_matrix is not None else 0}
             )
+
+            self.progress.setValue(70)
+
+            # Add anomaly timeline if selected
+            if self.section_checks['timeline'].isChecked() and self.anomalies_df is not None:
+                try:
+                    reporter.add_anomaly_timeline(
+                        self.anomalies_df,
+                        time_column='window_date',
+                        score_column='anomaly_score'
+                    )
+                    self.log_widget.log("Added anomaly timeline chart", "INFO")
+                except Exception as e:
+                    self.log_widget.log(f"Could not add timeline: {e}", "WARNING")
 
             self.progress.setValue(100)
             self.output_path = output_path
             self.output_label.setText(f"Report saved: {output_path}")
             self.open_btn.setEnabled(True)
 
+            self.log_widget.log(f"Report generated: {output_path}", "INFO")
             QMessageBox.information(self, "Success", f"Report generated: {output_path}")
 
         except Exception as e:
+            self.log_widget.log(f"Error: {e}", "ERROR")
             QMessageBox.critical(self, "Error", str(e))
             self.logger.error(f"Report generation error: {e}")
 
@@ -833,6 +1076,7 @@ class ReportingTab(QWidget):
             self.progress.setVisible(False)
 
     def _open_report(self) -> None:
+        """Open the generated report."""
         if hasattr(self, 'output_path'):
             import subprocess
             import platform
@@ -846,14 +1090,16 @@ class ReportingTab(QWidget):
 
 
 class DataFetcherTab(QWidget):
-    """Tab for fetching data from Alpha Vantage API."""
+    """Tab for fetching data from Alpha Vantage API with auto-split for new transactions."""
 
-    dataFetched = pyqtSignal(object)
+    dataFetched = pyqtSignal(object, object)  # (historical_df, new_transactions_df)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.logger = setup_logging(__name__)
         self.client: Optional[AlphaVantageClient] = None
+        self.historical_df: Optional[pd.DataFrame] = None
+        self.new_transactions_df: Optional[pd.DataFrame] = None
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -907,7 +1153,7 @@ class DataFetcherTab(QWidget):
         self.search_results = QTableWidget()
         self.search_results.setColumnCount(4)
         self.search_results.setHorizontalHeaderLabels(['Symbol', 'Name', 'Type', 'Region'])
-        self.search_results.setMaximumHeight(150)
+        self.search_results.setMaximumHeight(120)
         self.search_results.itemDoubleClicked.connect(self._select_from_search)
         layout.addWidget(self.search_results)
 
@@ -933,6 +1179,19 @@ class DataFetcherTab(QWidget):
         self.output_size_combo.addItems(['Full (20+ years)', 'Compact (100 days)'])
         params_layout.addWidget(self.output_size_combo, 0, 3)
 
+        # New transactions split configuration
+        params_layout.addWidget(QLabel("New Transactions Period:"), 1, 0)
+        self.new_period_spin = QSpinBox()
+        self.new_period_spin.setMinimum(1)
+        self.new_period_spin.setMaximum(24)
+        self.new_period_spin.setValue(6)
+        self.new_period_spin.setSuffix(" months")
+        params_layout.addWidget(self.new_period_spin, 1, 1)
+
+        self.auto_split_check = QCheckBox("Auto-split recent data as 'New Transactions'")
+        self.auto_split_check.setChecked(True)
+        params_layout.addWidget(self.auto_split_check, 1, 2, 1, 2)
+
         layout.addWidget(params_group)
 
         # Cached Data Info Section
@@ -948,7 +1207,7 @@ class DataFetcherTab(QWidget):
         self.cache_table.setHorizontalHeaderLabels([
             'Data Type', 'Start Date', 'End Date', 'Rows', 'Last Updated'
         ])
-        self.cache_table.setMaximumHeight(150)
+        self.cache_table.setMaximumHeight(100)
         cache_layout.addWidget(self.cache_table)
 
         layout.addWidget(cache_group)
@@ -975,20 +1234,37 @@ class DataFetcherTab(QWidget):
         fetch_layout.addWidget(self.progress)
 
         self.log_widget = LogWidget()
+        self.log_widget.setMaximumHeight(100)
         fetch_layout.addWidget(self.log_widget)
 
         layout.addWidget(fetch_group)
 
+        # Data Split Summary
+        split_group = QGroupBox("Data Split Summary")
+        split_layout = QGridLayout(split_group)
+
+        split_layout.addWidget(QLabel("Historical Data:"), 0, 0)
+        self.historical_label = QLabel("Not loaded")
+        self.historical_label.setStyleSheet("font-weight: bold;")
+        split_layout.addWidget(self.historical_label, 0, 1)
+
+        split_layout.addWidget(QLabel("New Transactions:"), 0, 2)
+        self.new_trans_label = QLabel("Not loaded")
+        self.new_trans_label.setStyleSheet("font-weight: bold;")
+        split_layout.addWidget(self.new_trans_label, 0, 3)
+
+        self.use_data_btn = QPushButton("Use This Data for Analysis")
+        self.use_data_btn.clicked.connect(self._use_data)
+        self.use_data_btn.setEnabled(False)
+        split_layout.addWidget(self.use_data_btn, 1, 0, 1, 4)
+
+        layout.addWidget(split_group)
+
         # Preview Section
-        preview_group = QGroupBox("Data Preview")
+        preview_group = QGroupBox("Data Preview (Historical)")
         preview_layout = QVBoxLayout(preview_group)
         self.preview_table = DataPreviewTable()
         preview_layout.addWidget(self.preview_table)
-
-        export_btn = QPushButton("Export to CSV for Analysis")
-        export_btn.clicked.connect(self._export_for_analysis)
-        preview_layout.addWidget(export_btn)
-
         layout.addWidget(preview_group)
 
     def _connect_api(self) -> None:
@@ -1146,17 +1422,20 @@ class DataFetcherTab(QWidget):
                     adjusted=adjusted
                 )
 
-            self.progress.setValue(80)
+            self.progress.setValue(70)
 
             if len(df) > 0:
                 self.log_widget.log(
                     f"Fetched {len(df)} rows from {df.index.min()} to {df.index.max()}",
                     "INFO"
                 )
-                self.preview_table.set_dataframe(df.head(50))
+
+                # Split data if auto-split is enabled
+                self._split_data(df)
+                self.progress.setValue(90)
+
                 self._update_cache_info(symbol)
-                self.fetched_df = df
-                self.dataFetched.emit(df)
+
             else:
                 self.log_widget.log("No data returned", "WARNING")
 
@@ -1169,6 +1448,55 @@ class DataFetcherTab(QWidget):
         finally:
             self.fetch_btn.setEnabled(True)
             self.progress.setVisible(False)
+
+    def _split_data(self, df: pd.DataFrame) -> None:
+        """Split data into historical and new transactions."""
+        from datetime import timedelta
+
+        if self.auto_split_check.isChecked():
+            # Get the split date (N months ago from the most recent date)
+            months = self.new_period_spin.value()
+
+            if df.index.name == 'date' or hasattr(df.index, 'date'):
+                max_date = df.index.max()
+                split_date = max_date - timedelta(days=months * 30)
+
+                self.historical_df = df[df.index < split_date].copy()
+                self.new_transactions_df = df[df.index >= split_date].copy()
+
+                self.log_widget.log(
+                    f"Split at {split_date.strftime('%Y-%m-%d')}: "
+                    f"{len(self.historical_df)} historical, {len(self.new_transactions_df)} new",
+                    "INFO"
+                )
+            else:
+                # No date index, use all as historical
+                self.historical_df = df.copy()
+                self.new_transactions_df = pd.DataFrame()
+                self.log_widget.log("No date index found, using all data as historical", "WARNING")
+        else:
+            # No split, all data is historical
+            self.historical_df = df.copy()
+            self.new_transactions_df = pd.DataFrame()
+
+        # Update labels
+        if len(self.historical_df) > 0:
+            hist_start = str(self.historical_df.index.min())[:10]
+            hist_end = str(self.historical_df.index.max())[:10]
+            self.historical_label.setText(f"{len(self.historical_df)} rows ({hist_start} to {hist_end})")
+        else:
+            self.historical_label.setText("No data")
+
+        if len(self.new_transactions_df) > 0:
+            new_start = str(self.new_transactions_df.index.min())[:10]
+            new_end = str(self.new_transactions_df.index.max())[:10]
+            self.new_trans_label.setText(f"{len(self.new_transactions_df)} rows ({new_start} to {new_end})")
+        else:
+            self.new_trans_label.setText("No new transactions")
+
+        # Update preview
+        self.preview_table.set_dataframe(self.historical_df.head(50))
+        self.use_data_btn.setEnabled(True)
 
     def _load_cached(self) -> None:
         """Load cached data for symbol."""
@@ -1186,34 +1514,33 @@ class DataFetcherTab(QWidget):
 
             if df is not None and len(df) > 0:
                 self.log_widget.log(f"Loaded {len(df)} rows from cache", "INFO")
-                self.preview_table.set_dataframe(df.head(50))
-                self.fetched_df = df
-                self.dataFetched.emit(df)
+                self._split_data(df)
+                self._update_cache_info(symbol)
             else:
                 self.log_widget.log("No cached data found", "WARNING")
 
         except Exception as e:
             self.log_widget.log(f"Failed to load cached data: {e}", "ERROR")
 
-    def _export_for_analysis(self) -> None:
-        """Export fetched data to CSV for use in analysis."""
-        if not hasattr(self, 'fetched_df') or self.fetched_df is None:
-            QMessageBox.warning(self, "Warning", "No data to export. Fetch data first.")
+    def _use_data(self) -> None:
+        """Emit the split data for use in analysis pipeline."""
+        if self.historical_df is None or len(self.historical_df) == 0:
+            QMessageBox.warning(self, "Warning", "No historical data available.")
             return
 
-        filepath, _ = QFileDialog.getSaveFileName(
-            self, "Export Data", "stock_data.csv",
-            "CSV Files (*.csv)"
+        self.dataFetched.emit(self.historical_df, self.new_transactions_df)
+        self.log_widget.log("Data sent to analysis pipeline", "INFO")
+        QMessageBox.information(
+            self, "Success",
+            f"Data loaded:\n"
+            f"- Historical: {len(self.historical_df)} rows\n"
+            f"- New Transactions: {len(self.new_transactions_df) if self.new_transactions_df is not None else 0} rows\n\n"
+            f"Switch to Feature Engineering tab to continue."
         )
-
-        if filepath:
-            self.fetched_df.to_csv(filepath)
-            self.log_widget.log(f"Exported to {filepath}", "INFO")
-            QMessageBox.information(self, "Success", f"Data exported to {filepath}")
 
 
 class MainWindow(QMainWindow):
-    """Main application window with 6 tabs."""
+    """Main application window with 5 tabs for streamlined workflow."""
 
     def __init__(self):
         super().__init__()
@@ -1235,20 +1562,19 @@ class MainWindow(QMainWindow):
         # Tab widget
         self.tabs = QTabWidget()
 
-        # Create tabs
+        # Create tabs (streamlined 5-tab workflow)
+        self.fetch_tab = DataFetcherTab()
         self.data_tab = DataManagementTab()
         self.feature_tab = FeatureEngineeringTab()
         self.model_tab = ModelTrainingTab()
-        self.anomaly_tab = AnomalyDetectionTab()
-        self.report_tab = ReportingTab()
-        self.fetch_tab = DataFetcherTab()
+        self.anomaly_report_tab = AnomalyReportTab()
 
-        self.tabs.addTab(self.data_tab, "1. Data Management")
-        self.tabs.addTab(self.feature_tab, "2. Feature Engineering")
-        self.tabs.addTab(self.model_tab, "3. Model Training")
-        self.tabs.addTab(self.anomaly_tab, "4. Anomaly Detection")
-        self.tabs.addTab(self.report_tab, "5. Reporting")
-        self.tabs.addTab(self.fetch_tab, "6. Data Fetcher (Alpha Vantage)")
+        # Tab order: Fetch -> Data Mgmt -> Features -> Training -> Detection & Report
+        self.tabs.addTab(self.fetch_tab, "1. Data Fetcher (Alpha Vantage)")
+        self.tabs.addTab(self.data_tab, "2. Data Management (CSV)")
+        self.tabs.addTab(self.feature_tab, "3. Feature Engineering")
+        self.tabs.addTab(self.model_tab, "4. Model Training")
+        self.tabs.addTab(self.anomaly_report_tab, "5. Detection & Reporting")
 
         layout.addWidget(self.tabs)
 
@@ -1262,8 +1588,12 @@ class MainWindow(QMainWindow):
         # File menu
         file_menu = menubar.addMenu("File")
 
-        load_action = QAction("Load Data", self)
-        load_action.triggered.connect(lambda: self.tabs.setCurrentIndex(0))
+        fetch_action = QAction("Fetch from Alpha Vantage", self)
+        fetch_action.triggered.connect(lambda: self.tabs.setCurrentIndex(0))
+        file_menu.addAction(fetch_action)
+
+        load_action = QAction("Load CSV Data", self)
+        load_action.triggered.connect(lambda: self.tabs.setCurrentIndex(1))
         file_menu.addAction(load_action)
 
         file_menu.addSeparator()
@@ -1280,23 +1610,35 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about_action)
 
     def _connect_signals(self) -> None:
-        # Data loaded -> enable feature engineering
+        # Alpha Vantage fetched data -> Feature Engineering (with split)
+        self.fetch_tab.dataFetched.connect(self.feature_tab.set_split_data)
+        self.fetch_tab.dataFetched.connect(
+            lambda hist, new: self.status_bar.set_status(
+                f"Data fetched: {len(hist)} historical, {len(new) if new is not None else 0} new"
+            )
+        )
+
+        # CSV Data loaded -> Feature Engineering (legacy path)
         self.data_tab.dataLoaded.connect(self.feature_tab.set_data)
         self.data_tab.dataLoaded.connect(
-            lambda _: self.status_bar.set_status("Data loaded successfully")
+            lambda _: self.status_bar.set_status("CSV data loaded successfully")
         )
 
-        # Features ready -> enable model training
+        # Features ready -> Model Training and Anomaly/Report tab
         self.feature_tab.featuresReady.connect(self.model_tab.set_feature_matrix)
-        self.feature_tab.featuresReady.connect(self.anomaly_tab.set_feature_matrix)
+        self.feature_tab.featuresReady.connect(self.anomaly_report_tab.set_feature_matrix)
         self.feature_tab.featuresReady.connect(
-            lambda _, __: self.status_bar.set_status("Features computed")
+            lambda eng, hist, new: self.status_bar.set_status(
+                f"Features computed: {len(hist)} historical, {len(new) if new is not None else 0} new"
+            )
         )
 
-        # Models ready -> enable anomaly detection
-        self.model_tab.modelsReady.connect(self.anomaly_tab.set_models)
+        # Models ready -> Anomaly/Report tab
+        self.model_tab.modelsReady.connect(self.anomaly_report_tab.set_models)
         self.model_tab.modelsReady.connect(
-            lambda _: self.status_bar.set_status("Models trained")
+            lambda factory, metrics, new: self.status_bar.set_status(
+                f"Models trained: {len(factory.models)} models ready"
+            )
         )
 
     def _show_about(self) -> None:
@@ -1304,9 +1646,14 @@ class MainWindow(QMainWindow):
             self,
             "About",
             "Insider Trading Anomaly Detection System\n\n"
-            "Version 1.0.0\n\n"
+            "Version 1.1.0\n\n"
             "A production-ready Python system for detecting "
-            "suspicious insider trading patterns using machine learning."
+            "suspicious insider trading patterns using machine learning.\n\n"
+            "Workflow:\n"
+            "1. Fetch data from Alpha Vantage or load CSV\n"
+            "2. Engineer features from transaction data\n"
+            "3. Train anomaly detection models\n"
+            "4. Detect anomalies and generate reports"
         )
 
 
