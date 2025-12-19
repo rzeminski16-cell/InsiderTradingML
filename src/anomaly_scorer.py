@@ -98,8 +98,8 @@ class AnomalyScorer:
             # LOF: negative LOF scores
             return normalize_scores(raw_scores, method='minmax')
 
-        elif model_type == 'LSTMAutoencoder':
-            # LSTM: reconstruction error, use sigmoid normalization
+        elif model_type in ['LSTMAutoencoder', 'NNAutoencoder']:
+            # Autoencoder: reconstruction error, use sigmoid normalization
             return normalize_scores(raw_scores, method='sigmoid')
 
         elif model_type == 'KMeans':

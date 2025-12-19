@@ -6,7 +6,7 @@ for 6 different anomaly detection algorithms:
 - Isolation Forest
 - DBSCAN
 - Local Outlier Factor (LOF)
-- LSTM Autoencoder
+- Neural Network Autoencoder (sklearn-based, no TensorFlow required)
 - K-Means
 - One-Class SVM
 
@@ -17,7 +17,7 @@ Classes:
     IsolationForestModel: Isolation Forest implementation
     DBSCANModel: DBSCAN clustering implementation
     LocalOutlierFactorModel: LOF implementation
-    LSTMAutoencoderModel: LSTM Autoencoder implementation
+    NNAutoencoderModel: Neural Network Autoencoder (sklearn MLPRegressor)
     KMeansModel: K-Means clustering implementation
     OneClassSVMModel: One-Class SVM implementation
     ModelFactory: Factory class for creating and managing models
@@ -35,6 +35,7 @@ import pandas as pd
 from sklearn.cluster import DBSCAN, KMeans
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
+from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import OneClassSVM
 
@@ -46,19 +47,6 @@ from .utils import (
     load_pickle,
     get_timestamp
 )
-
-# TensorFlow import with error handling
-try:
-    import tensorflow as tf
-    from tensorflow import keras
-    from tensorflow.keras.models import Model, Sequential
-    from tensorflow.keras.layers import (
-        Dense, LSTM, RepeatVector, TimeDistributed, Input
-    )
-    from tensorflow.keras.callbacks import EarlyStopping
-    TENSORFLOW_AVAILABLE = True
-except ImportError:
-    TENSORFLOW_AVAILABLE = False
 
 
 class BaseAnomalyModel(ABC):
@@ -291,10 +279,13 @@ class DBSCANModel(BaseAnomalyModel):
         # For new data, calculate distances to core samples
         predictions = []
         for x in X_scaled:
-            distances = np.linalg.norm(self._core_samples - x, axis=1)
-            min_dist = distances.min() if len(distances) > 0 else float('inf')
-            is_anomaly = min_dist > self.hyperparameters['eps']
-            predictions.append(int(is_anomaly))
+            if len(self._core_samples) == 0:
+                predictions.append(1)
+            else:
+                distances = np.linalg.norm(self._core_samples - x, axis=1)
+                min_dist = distances.min()
+                is_anomaly = min_dist > self.hyperparameters['eps']
+                predictions.append(int(is_anomaly))
 
         return np.array(predictions)
 
@@ -385,137 +376,84 @@ class LocalOutlierFactorModel(BaseAnomalyModel):
         return normalize_scores(raw_scores, method='minmax')
 
 
-class LSTMAutoencoderModel(BaseAnomalyModel):
+class NNAutoencoderModel(BaseAnomalyModel):
     """
-    LSTM Autoencoder anomaly detection model.
+    Neural Network Autoencoder anomaly detection model.
 
-    Trains an LSTM autoencoder on normal data. Anomalies are detected
-    based on high reconstruction error.
+    Uses sklearn's MLPRegressor as an autoencoder. Trains to reconstruct
+    input data; anomalies are detected based on high reconstruction error.
+
+    This implementation does NOT require TensorFlow and works with Python 3.13+.
     """
 
     def __init__(
         self,
-        sequence_length: int = 7,
-        encoding_dim: int = 16,
-        epochs: int = 50,
-        batch_size: int = 16,
-        patience: int = 5,
-        validation_split: float = 0.2
+        encoding_dim: int = 8,
+        hidden_layers: Tuple[int, ...] = (32, 16, 8, 16, 32),
+        max_iter: int = 500,
+        learning_rate_init: float = 0.001,
+        random_state: int = 42
     ):
         """
-        Initialize LSTM Autoencoder model.
+        Initialize Neural Network Autoencoder model.
 
         Args:
-            sequence_length: Length of input sequences
-            encoding_dim: Dimension of the encoding layer
-            epochs: Maximum training epochs
-            batch_size: Batch size for training
-            patience: Early stopping patience
-            validation_split: Fraction for validation
+            encoding_dim: Dimension of the bottleneck layer (for reference)
+            hidden_layers: Tuple of hidden layer sizes (encoder + decoder)
+            max_iter: Maximum training iterations
+            learning_rate_init: Initial learning rate
+            random_state: Random seed for reproducibility
         """
-        if not TENSORFLOW_AVAILABLE:
-            raise ImportError(
-                "TensorFlow is required for LSTM Autoencoder. "
-                "Install with: pip install tensorflow"
-            )
-
         hyperparameters = {
-            'sequence_length': sequence_length,
             'encoding_dim': encoding_dim,
-            'epochs': epochs,
-            'batch_size': batch_size,
-            'patience': patience,
-            'validation_split': validation_split
+            'hidden_layers': hidden_layers,
+            'max_iter': max_iter,
+            'learning_rate_init': learning_rate_init,
+            'random_state': random_state
         }
-        super().__init__('LSTMAutoencoder', hyperparameters)
+        super().__init__('NNAutoencoder', hyperparameters)
 
         self._threshold: Optional[float] = None
+        self._train_errors: Optional[np.ndarray] = None
 
-    def _build_model(self, n_features: int) -> Model:
-        """Build the LSTM Autoencoder architecture."""
-        sequence_length = self.hyperparameters['sequence_length']
-        encoding_dim = self.hyperparameters['encoding_dim']
-
-        # Encoder
-        inputs = Input(shape=(sequence_length, n_features))
-        encoded = LSTM(64, activation='relu', return_sequences=True)(inputs)
-        encoded = LSTM(32, activation='relu', return_sequences=False)(encoded)
-        encoded = Dense(encoding_dim, activation='relu')(encoded)
-
-        # Decoder
-        decoded = RepeatVector(sequence_length)(encoded)
-        decoded = LSTM(32, activation='relu', return_sequences=True)(decoded)
-        decoded = LSTM(64, activation='relu', return_sequences=True)(decoded)
-        outputs = TimeDistributed(Dense(n_features))(decoded)
-
-        model = Model(inputs, outputs)
-        model.compile(optimizer='adam', loss='mse')
-
-        return model
-
-    def _create_sequences(self, X: np.ndarray) -> np.ndarray:
-        """Create sequences from data for LSTM input."""
-        sequence_length = self.hyperparameters['sequence_length']
-
-        if len(X) < sequence_length:
-            # Pad if not enough data
-            padding = np.zeros((sequence_length - len(X), X.shape[1]))
-            X = np.vstack([padding, X])
-
-        sequences = []
-        for i in range(len(X) - sequence_length + 1):
-            sequences.append(X[i:i + sequence_length])
-
-        return np.array(sequences)
-
-    def fit(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> 'LSTMAutoencoderModel':
-        """Train the LSTM Autoencoder."""
+    def fit(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> 'NNAutoencoderModel':
+        """Train the Neural Network Autoencoder."""
         start_time = time.time()
 
         self.scaler = StandardScaler()
         X_scaled = self.scaler.fit_transform(X)
 
-        # Create sequences
-        X_seq = self._create_sequences(X_scaled)
-
-        if len(X_seq) == 0:
-            raise ValueError(
-                f"Not enough data to create sequences. "
-                f"Need at least {self.hyperparameters['sequence_length']} samples."
-            )
-
-        # Build and train model
-        self._model = self._build_model(X.shape[1])
-
-        early_stopping = EarlyStopping(
-            monitor='val_loss',
-            patience=self.hyperparameters['patience'],
-            restore_best_weights=True
+        # Build autoencoder architecture
+        # Input -> hidden_layers -> Output (same as input)
+        self._model = MLPRegressor(
+            hidden_layer_sizes=self.hyperparameters['hidden_layers'],
+            activation='relu',
+            solver='adam',
+            learning_rate_init=self.hyperparameters['learning_rate_init'],
+            max_iter=self.hyperparameters['max_iter'],
+            random_state=self.hyperparameters['random_state'],
+            early_stopping=True,
+            validation_fraction=0.1,
+            n_iter_no_change=10,
+            verbose=False
         )
 
-        # Suppress TensorFlow output
-        tf.get_logger().setLevel('ERROR')
+        # Train autoencoder: input = output (reconstruction)
+        self._model.fit(X_scaled, X_scaled)
 
-        self._model.fit(
-            X_seq, X_seq,
-            epochs=self.hyperparameters['epochs'],
-            batch_size=self.hyperparameters['batch_size'],
-            validation_split=self.hyperparameters['validation_split'],
-            callbacks=[early_stopping],
-            verbose=0
-        )
+        # Calculate reconstruction errors on training data
+        reconstructed = self._model.predict(X_scaled)
+        self._train_errors = np.mean(np.power(X_scaled - reconstructed, 2), axis=1)
 
-        # Calculate threshold from training reconstruction errors
-        reconstructed = self._model.predict(X_seq, verbose=0)
-        mse = np.mean(np.power(X_seq - reconstructed, 2), axis=(1, 2))
-        self._threshold = np.percentile(mse, 95)
+        # Set threshold at 95th percentile of training errors
+        self._threshold = np.percentile(self._train_errors, 95)
 
         self.training_time = time.time() - start_time
         self.is_fitted = True
         self._training_timestamp = datetime.now()
 
         self.logger.info(
-            f"LSTM Autoencoder trained in {self.training_time:.2f}s"
+            f"NNAutoencoder trained in {self.training_time:.2f}s"
         )
         return self
 
@@ -534,18 +472,10 @@ class LSTMAutoencoderModel(BaseAnomalyModel):
             raise ValueError("Model not fitted. Call fit() first.")
 
         X_scaled = self.scaler.transform(X)
-        X_seq = self._create_sequences(X_scaled)
+        reconstructed = self._model.predict(X_scaled)
 
-        if len(X_seq) == 0:
-            return np.zeros(len(X))
-
-        reconstructed = self._model.predict(X_seq, verbose=0)
-        mse = np.mean(np.power(X_seq - reconstructed, 2), axis=(1, 2))
-
-        # Pad to match original length
-        padding_length = len(X) - len(mse)
-        if padding_length > 0:
-            mse = np.concatenate([np.zeros(padding_length), mse])
+        # Calculate mean squared error for each sample
+        mse = np.mean(np.power(X_scaled - reconstructed, 2), axis=1)
 
         return normalize_scores(mse, method='minmax')
 
@@ -704,6 +634,10 @@ class OneClassSVMModel(BaseAnomalyModel):
         return normalize_scores(raw_scores, method='minmax')
 
 
+# Backwards compatibility alias
+LSTMAutoencoderModel = NNAutoencoderModel
+
+
 class ModelFactory:
     """
     Factory class for creating and managing anomaly detection models.
@@ -723,7 +657,8 @@ class ModelFactory:
         'IsolationForest': IsolationForestModel,
         'DBSCAN': DBSCANModel,
         'LocalOutlierFactor': LocalOutlierFactorModel,
-        'LSTMAutoencoder': LSTMAutoencoderModel,
+        'NNAutoencoder': NNAutoencoderModel,
+        'LSTMAutoencoder': NNAutoencoderModel,  # Alias for backwards compatibility
         'KMeans': KMeansModel,
         'OneClassSVM': OneClassSVMModel
     }
@@ -759,8 +694,16 @@ class ModelFactory:
             )
 
         # Get default hyperparameters and update with custom ones
-        default_params = constants.DEFAULT_HYPERPARAMETERS.get(model_type, {})
+        # Map LSTMAutoencoder to NNAutoencoder defaults
+        param_key = 'NNAutoencoder' if model_type == 'LSTMAutoencoder' else model_type
+        default_params = constants.DEFAULT_HYPERPARAMETERS.get(param_key, {})
         params = {**default_params, **(hyperparameters or {})}
+
+        # Filter out params not applicable to NNAutoencoder
+        if model_type in ['LSTMAutoencoder', 'NNAutoencoder']:
+            valid_params = ['encoding_dim', 'hidden_layers', 'max_iter',
+                          'learning_rate_init', 'random_state']
+            params = {k: v for k, v in params.items() if k in valid_params}
 
         # Create model
         model_class = self.MODEL_CLASSES[model_type]

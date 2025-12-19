@@ -129,10 +129,15 @@ SUPPORTED_MODELS = [
     'IsolationForest',
     'DBSCAN',
     'LocalOutlierFactor',
-    'LSTMAutoencoder',
+    'NNAutoencoder',
     'KMeans',
     'OneClassSVM'
 ]
+
+# Alias for backwards compatibility
+SUPPORTED_MODELS_ALIASES = {
+    'LSTMAutoencoder': 'NNAutoencoder'
+}
 
 DEFAULT_HYPERPARAMETERS: Dict[str, Dict] = {
     'IsolationForest': {
@@ -151,13 +156,12 @@ DEFAULT_HYPERPARAMETERS: Dict[str, Dict] = {
         'contamination': 0.05,
         'novelty': True
     },
-    'LSTMAutoencoder': {
-        'sequence_length': 7,
-        'encoding_dim': 16,
-        'epochs': 50,
-        'batch_size': 16,
-        'patience': 5,
-        'validation_split': 0.2
+    'NNAutoencoder': {
+        'encoding_dim': 8,
+        'hidden_layers': (32, 16, 8, 16, 32),
+        'max_iter': 500,
+        'learning_rate_init': 0.001,
+        'random_state': 42
     },
     'KMeans': {
         'n_clusters': 5,
@@ -186,11 +190,10 @@ HYPERPARAMETER_RANGES: Dict[str, Dict] = {
         'n_neighbors': {'min': 5, 'max': 50, 'step': 5, 'type': 'int'},
         'contamination': {'min': 0.01, 'max': 0.2, 'step': 0.01, 'type': 'float'}
     },
-    'LSTMAutoencoder': {
-        'sequence_length': {'min': 3, 'max': 14, 'step': 1, 'type': 'int'},
-        'encoding_dim': {'min': 8, 'max': 64, 'step': 8, 'type': 'int'},
-        'epochs': {'min': 10, 'max': 200, 'step': 10, 'type': 'int'},
-        'batch_size': {'options': [8, 16, 32, 64], 'type': 'choice'}
+    'NNAutoencoder': {
+        'encoding_dim': {'min': 4, 'max': 32, 'step': 4, 'type': 'int'},
+        'max_iter': {'min': 100, 'max': 1000, 'step': 100, 'type': 'int'},
+        'learning_rate_init': {'min': 0.0001, 'max': 0.01, 'step': 0.001, 'type': 'float'}
     },
     'KMeans': {
         'n_clusters': {'min': 2, 'max': 15, 'step': 1, 'type': 'int'},
